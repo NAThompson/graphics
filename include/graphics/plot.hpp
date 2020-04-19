@@ -58,94 +58,144 @@ public:
     }
 
     template<class F>
-    plot& add_fn(F const & f, std::array<unsigned char, 4> rgba, unsigned thickness = 0)
+    plot& add_fn(F const & f, std::array<unsigned char, 3> rgb, unsigned thickness = 0)
     {
         if (thickness == 0)
         {
             thickness = width_/100;
         }
         std::vector<Real> ys(width_);
-        //std::vector<Real> dydx(width_);
         for (unsigned ix = 0; ix < width_; ++ix)
         {
-            // We query the function at the side of the pixels, not the center.
-            // This allows us to fill in every pixel if the derivative is really large and create a continuous looking image:
-            Real x = a_ + (b_-a_)*ix/Real(width_ - 1);
+            // Query at the center of the pixel.
+            // a is identified with the center of the leftmost pixel. (ix = 0).
+            // b is identified with the center of the rightmost pixel. (ix = width - 1).
+            // If there are 2 pixels, then the distance between their centers is (b-a) in data space, and 1 in pixel space.            
+            Real dx = (b_ - a_)/Real(width_ - 1);
+            Real x = a_ + ix*dx;
             ys[ix] = f(x);
-            //dydx[ix] = boost::math::differentiation::finite_difference_derivative(f, x);
         }
-        auto [it1, it2] = std::minmax_element(ys.begin(), ys.end());
-        Real ymin = *it1;
-        Real ymax = *it2;
-        if (!std::isnan(clip_max_))
+        Real ymin;
+        Real ymax;
+        if (std::isnan(clip_max_))
+        {
+            if (std::isnan(clip_min_))
+            {
+                auto [it1, it2] = std::minmax_element(ys.begin(), ys.end());
+                ymin = *it1;
+                ymax = *it2;
+            }
+            else
+            {
+                ymin = clip_min_;
+                ymax = *std::max_element(ys.begin(), ys.end());
+            }
+        }
+        else
         {
             ymax = clip_max_;
-        }
-        if (!std::isnan(clip_min_))
-        {
             ymin = clip_min_;
         }
 
         if (std::isnan(clip_max_) && std::isnan(clip_min_)  && (ymin == ymax) )
         {
-            throw std::domain_error("You can graph constants, but if so, you have to set clips.");
+            throw std::domain_error("You can graph constants, but if so, you have to set the range.");
         }
-        
-        for (unsigned ix = 0; ix < width_ - 1; ++ix)
+
+        // Set the first pixel:
+        Real y = ys[0];
+        if (y <= ymax && y >= ymin)
         {
-            Real yi = ys[ix];
-            Real yip1 = ys[ix+1];
-            if (yi > ymax || yi < ymin)
+            Real ypx = (ymax-y)*Real(height_-1)/(ymax - ymin);
+            unsigned iy = static_cast<unsigned>(std::round(ypx));
+            img_[4 * width_ * iy + 0] = rgb[0];
+            img_[4 * width_ * iy + 1] = rgb[1];
+            img_[4 * width_ * iy + 2] = rgb[2];
+            img_[4 * width_ * iy + 3] = 255;
+        }
+
+        // Set the last pixel:
+        y = ys.back();
+        if (y <= ymax && y >= ymin)
+        {
+            Real ypx = (ymax-y)*Real(height_-1)/(ymax - ymin);
+            unsigned iy = static_cast<unsigned>(std::round(ypx));
+            unsigned ix = width_ - 1;
+            img_[4 * width_ * iy + 4 * ix + 0] = rgb[0];
+            img_[4 * width_ * iy + 4 * ix + 1] = rgb[1];
+            img_[4 * width_ * iy + 4 * ix + 2] = rgb[2];
+            img_[4 * width_ * iy + 4 * ix + 3] = 255;
+        }
+
+        for (unsigned ix = 1; ix < width_ - 1; ++ix)
+        {
+            Real yleft = ys[ix-1];
+            Real y = ys[ix];
+            Real yright = ys[ix+1];
+            // If the function goes beyond the bounds, we want it to be graphed right up to the edge.
+            // So there's a bit of if logic to figure out how far to extrapolate.
+            Real local_ymin = std::min(std::min(yleft, y), yright);
+            if (local_ymin > ymax)
             {
                 continue;
             }
-             // iy = 0 is the top of the image, so use ymax - y, not y - ymin:
-            Real yipx = (ymax-yi)*Real(height_-1)/(ymax - ymin);
-            Real yip1px = (ymax-yip1)*Real(height_-1)/(ymax - ymin);
+            Real local_ymax = std::max(std::max(yleft, y), yright);
+            if (local_ymax < ymin)
+            {
+                continue;
+            }
+            // This happens at a pole:
+            if (yleft < ymin && yright > ymax)
+            {
+                continue;
+            }
+            // This happens at a pole:
+            if (yleft > ymax && yright < ymin)
+            {
+                continue;
+            }
+            if (yleft > ymax)
+            {
+                yleft = ymax;
+            }
+            if (yright > ymax)
+            {
+                yright = ymax;
+            }
+
+            // iy = 0 is the top of the image, so use ymax - y, not y - ymin.
+            // ymax is associated with the *center* of the pixel at iy = 0. (Imagine marking an axis at ymax to see this.)
+            // ymin is associated with the *center* of the pixel at iy = height - 1.
+            // So if there are 2 pixels, dy = 1 in pixel space.
+            //Real ypx = (ymax-y)*Real(height_-1)/(ymax - ymin);
+            Real ypxleft = (ymax-yleft)*Real(height_-1)/(ymax - ymin);
+            Real ypxright = (ymax-yright)*Real(height_-1)/(ymax - ymin);
             unsigned iymin;
             unsigned iymax;
-            // ys[ix] is associated with the left side, ys[ix+1] is associated with the right side.
-            // Set every pixel in between.
-            if (yipx <= yip1px)
+            // Make sure the graph is continuous:
+            if (ypxleft <= ypxright)
             {
-                iymin = static_cast<unsigned>(std::floor(yipx));
-                iymax = static_cast<unsigned>(std::ceil(yip1px));
+                iymin = static_cast<unsigned>(std::floor(ypxleft));
+                iymax = static_cast<unsigned>(std::ceil(ypxright));
             }
             else
             { 
-                iymin = static_cast<unsigned>(std::floor(yip1px));
-                iymax = static_cast<unsigned>(std::ceil(yipx));
-            }
-            // If the function is (say) constant, then the graph width can get *very* thin.
-            bool toggle = true;
-            //unsigned t = thickness*std::min(std::max(Real(1), std::abs(dydx[ix])), Real(8));
-            while (iymax - iymin < thickness)
-            {
-                if (toggle)
-                {
-                    ++iymax;
-                    toggle = false;
-                }
-                else {
-                    if (iymin > 0)
-                    {
-                        --iymin;
-                        toggle = true;
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
+                iymin = static_cast<unsigned>(std::floor(ypxright));
+                iymax = static_cast<unsigned>(std::ceil(ypxleft));
             }
             
             for (unsigned iy = iymin; iy < iymax && iy < height_; ++iy)
             {
-                img_[4 * width_ * iy + 4 * ix + 0] = rgba[0];
-                img_[4 * width_ * iy + 4 * ix + 1] = rgba[1];
-                img_[4 * width_ * iy + 4 * ix + 2] = rgba[2];
-                img_[4 * width_ * iy + 4 * ix + 3] = rgba[3];
+                img_[4 * width_ * iy + 4 * ix + 0] = rgb[0];
+                img_[4 * width_ * iy + 4 * ix + 1] = rgb[1];
+                img_[4 * width_ * iy + 4 * ix + 2] = rgb[2];
+                img_[4 * width_ * iy + 4 * ix + 3] = 255;
             }
+            // Now we need to mark the pixels along the normal to the tangent, whose equation is
+            // y - f(x_i) = (-1/f'(x_i))*(x-x_i).
+            // We can get a good approximation to this by using the symmetric finite difference.
+            // I think this is closely related to Xiaolin Wu's Line algorithm:
+            // https://en.wikipedia.org/wiki/Xiaolin_Wu's_line_algorithm
         }
         // Now we set a clip, since we can't go back and re-render this function:
         if (std::isnan(clip_max_))
@@ -159,20 +209,19 @@ public:
         return *this;
     }
 
-    plot& write_gridlines(std::array<unsigned char, 4> rgba = {255, 255, 255, 255})
+    plot& write_gridlines(std::array<unsigned char, 3> rgb = {255, 255, 255})
     {
         if (clip_min_ <= 0 && clip_max_ >= 0)
         {
             Real y = 0;
             Real ypx = (clip_max_-y)*Real(height_-1)/(clip_max_ - clip_min_);
             unsigned iy = static_cast<unsigned>(std::floor(ypx));
-
             for (unsigned ix = 0; ix < width_; ++ix)
             {
-                img_[4 * width_ * iy + 4 * ix + 0] = rgba[0];
-                img_[4 * width_ * iy + 4 * ix + 1] = rgba[1];
-                img_[4 * width_ * iy + 4 * ix + 2] = rgba[2];
-                img_[4 * width_ * iy + 4 * ix + 3] = rgba[3];
+                img_[4 * width_ * iy + 4 * ix + 0] = rgb[0];
+                img_[4 * width_ * iy + 4 * ix + 1] = rgb[1];
+                img_[4 * width_ * iy + 4 * ix + 2] = rgb[2];
+                img_[4 * width_ * iy + 4 * ix + 3] = 255;
             }
         }
 
@@ -182,10 +231,10 @@ public:
             unsigned ix = static_cast<unsigned>(std::round(xpx));
             for (unsigned iy = 0; iy < height_; ++iy)
             {
-                img_[4 * width_ * iy + 4 * ix + 0] = rgba[0];
-                img_[4 * width_ * iy + 4 * ix + 1] = rgba[1];
-                img_[4 * width_ * iy + 4 * ix + 2] = rgba[2];
-                img_[4 * width_ * iy + 4 * ix + 3] = rgba[3];
+                img_[4 * width_ * iy + 4 * ix + 0] = rgb[0];
+                img_[4 * width_ * iy + 4 * ix + 1] = rgb[1];
+                img_[4 * width_ * iy + 4 * ix + 2] = rgb[2];
+                img_[4 * width_ * iy + 4 * ix + 3] = 255;
             }
         }
 
