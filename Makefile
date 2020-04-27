@@ -41,4 +41,4 @@ all: $(EXECS)
 
 .PHONY: clean
 clean:
-	rm -rf *.png *.x *.x.dSYM/ *.d
+	rm -rf *.png *.x *.x.dSYM/ *.d examples/*.x
